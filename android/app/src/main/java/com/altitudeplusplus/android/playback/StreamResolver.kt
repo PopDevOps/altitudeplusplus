@@ -1,9 +1,11 @@
 package com.altitudeplusplus.android.playback
 
+import android.util.Log
 import com.altitudeplusplus.android.AltitudeConfig
 import com.altitudeplusplus.android.DeviceProfile
 import com.altitudeplusplus.android.api.ViewLiftClient
 import com.altitudeplusplus.android.api.ViewLiftException
+import com.altitudeplusplus.android.api.array
 import com.altitudeplusplus.android.api.bool
 import com.altitudeplusplus.android.api.first
 import com.altitudeplusplus.android.api.get
@@ -13,8 +15,17 @@ import kotlinx.serialization.json.JsonElement
 
 data class WidevineInfo(val licenseUrl: String, val licenseToken: String?)
 
+/** A progressive MP4 copy Altitude+ offers for unencrypted clips. */
+data class Mp4Rendition(val height: Int, val url: String)
+
 /** What the player needs: a manifest URL, and Widevine details for protected streams. */
-data class PlaybackSource(val url: String, val isDash: Boolean, val widevine: WidevineInfo?)
+data class PlaybackSource(
+    val url: String,
+    val isDash: Boolean,
+    val widevine: WidevineInfo?,
+    /** Plain MP4 files (clips only), smallest first. */
+    val mp4: List<Mp4Rendition> = emptyList(),
+)
 
 class EntitlementException(val code: String, serverMessage: String?) : Exception(describe(code, serverMessage)) {
     companion object {
@@ -26,7 +37,9 @@ class EntitlementException(val code: String, serverMessage: String?) : Exception
                 upper in setOf("SVOD_TVE_SUBSCRIPTION_NOT_FOUND", "SUBSCRIPTION_NOT_FOUND", "FORBIDDEN") ->
                     "This account doesn't have an active Altitude+ subscription."
                 upper == "CANT_ACCESS_TVE_CONTENT" -> "Your TV provider login doesn't include this channel."
-                else -> serverMessage ?: "Altitude+ wouldn't start the stream ($code)."
+                upper == "VIDEO_NOT_EXISTS" ->
+                    "Altitude+ lists this video, but it hasn't been published yet or was taken down. Try again later."
+                else -> (serverMessage ?: "Altitude+ wouldn't start the stream.") + "\n\n(Altitude+ code: $code)"
             }
         }
     }
@@ -69,6 +82,10 @@ class StreamResolver(private val client: ViewLiftClient) {
     companion object {
         fun source(json: JsonElement, profile: DeviceProfile, deviceId: String): PlaybackSource {
             (json["errorCode"].string ?: json["code"].string)?.let { code ->
+                // Log the refusal without any token-bearing fields.
+                val fields = (json as? kotlinx.serialization.json.JsonObject)
+                    ?.filterKeys { !it.contains("token", ignoreCase = true) }
+                Log.w("AltitudePlayer", "Entitlement refused: code=$code body=${fields.toString().take(800)}")
                 throw EntitlementException(code, json["errorMessage"].string ?: json["message"].string)
             }
             // Ignore the placeholder copies under `linearchannel.channels[]`,
@@ -82,6 +99,11 @@ class StreamResolver(private val client: ViewLiftClient) {
                     throw ViewLiftException("Altitude+ returned no stream for this video.")
                 }
 
+            Log.i(
+                "AltitudePlayer",
+                "Assets for $contentType: ${(assets as? kotlinx.serialization.json.JsonObject)?.keys}, " +
+                    "drmEnabled=${json[contentType]["drmEnabled"].bool}",
+            )
             val widevine = listOf(assets["widevineCmaf"], assets["widevine"])
                 .firstOrNull { it["url"].string.isUsable() && it["licenseUrl"].string.isUsable() }
             if (widevine != null) {
@@ -95,7 +117,12 @@ class StreamResolver(private val client: ViewLiftClient) {
             val drmEnabled = json[contentType]["drmEnabled"].bool ?: json.first("drmEnabled").bool ?: false
             val hls = assets["hls"].string
             if (!drmEnabled && hls.isUsable()) {
-                return PlaybackSource(expandMacros(hls!!, deviceId, profile), isDash = false, widevine = null)
+                val mp4 = assets["mpeg"].array.orEmpty().mapNotNull { entry ->
+                    val url = entry["url"].string?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    val height = entry["renditionValue"].string?.filter(Char::isDigit)?.toIntOrNull() ?: return@mapNotNull null
+                    Mp4Rendition(height, url)
+                }.sortedBy { it.height }
+                return PlaybackSource(expandMacros(hls!!, deviceId, profile), isDash = false, widevine = null, mp4 = mp4)
             }
             throw ViewLiftException(
                 "Altitude+ didn't offer a Widevine stream for this device. Try Settings → Device profile → Web browser.",

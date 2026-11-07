@@ -4,6 +4,9 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +32,8 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -51,6 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.altitudeplusplus.android.AltitudeConfig
 import com.altitudeplusplus.android.DeviceProfile
+import com.altitudeplusplus.android.download.DownloadQuality
 import com.altitudeplusplus.android.guide.Program
 import com.altitudeplusplus.android.ondemand.Team
 import com.altitudeplusplus.android.playback.PlayerActivity
@@ -58,7 +64,7 @@ import java.text.DateFormat
 import java.util.Date
 
 private enum class Tab(val label: String, val glyph: String) {
-    LIVE("Live", "●"), AVALANCHE("Avalanche", "A"), NUGGETS("Nuggets", "N"), SETTINGS("Settings", "⚙")
+    LIVE("Live", "●"), AVALANCHE("Avalanche", "A"), NUGGETS("Nuggets", "N"), SAVED("Saved", "↓"), SETTINGS("Settings", "⚙")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,8 +72,11 @@ private enum class Tab(val label: String, val glyph: String) {
 fun HomeScreen(model: AppViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val current = Tab.entries[tab]
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) { model.messages.collect { snackbar.showSnackbar(it) } }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = { TopAppBar(title = { Text(if (current == Tab.LIVE) "Altitude++" else current.label) }) },
         bottomBar = {
             NavigationBar {
@@ -82,11 +91,14 @@ fun HomeScreen(model: AppViewModel) {
             }
         },
     ) { padding ->
+        OfflineCheckDialog(model)
+        FileAccessDialog(model)
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (current) {
                 Tab.LIVE -> LiveTab(model)
                 Tab.AVALANCHE -> TeamTab(model, Team.AVALANCHE)
                 Tab.NUGGETS -> TeamTab(model, Team.NUGGETS)
+                Tab.SAVED -> SavedTab(model)
                 Tab.SETTINGS -> SettingsTab(model)
             }
         }
@@ -175,29 +187,7 @@ private fun TeamTab(model: AppViewModel, team: Team) {
                     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         itemsIndexed(row.items, key = { _, item -> item.id }) { index, item ->
                             if (index >= row.items.size - 3) LaunchedEffect(row.items.size) { model.loadMore(team, row) }
-                            Column(
-                                Modifier.width(240.dp).clickable {
-                                    context.startActivity(PlayerActivity.video(context, item.id, item.title))
-                                },
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Box {
-                                    AsyncImage(
-                                        model = item.thumbnailUrl,
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)),
-                                    )
-                                    item.durationText?.let {
-                                        Text(
-                                            it,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
-                                        )
-                                    }
-                                }
-                                Text(item.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            }
+                            VideoTile(model, item)
                         }
                     }
                 }
@@ -211,12 +201,15 @@ private fun SettingsTab(model: AppViewModel) {
     val session by model.session.collectAsStateWithLifecycle()
     val profile by model.profile.collectAsStateWithLifecycle()
     val hasLocation = remember { model.graph.location.hasPermission() }
+    val quality by model.downloadQuality.collectAsStateWithLifecycle()
+    val saved by model.saved.collectAsStateWithLifecycle()
 
-    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Account", style = MaterialTheme.typography.titleMedium)
         Text(session?.email ?: "Signed in")
         session?.isSubscribed?.let { Text(if (it) "Subscription active" else "No active subscription on this account") }
         OutlinedButton(onClick = model::signOut) { Text("Sign out") }
+        Text("Signing out deletes downloaded replays. Clip MP4s in A++ stay.", style = MaterialTheme.typography.bodySmall)
 
         Text("Device profile", style = MaterialTheme.typography.titleMedium)
         Text(
@@ -232,6 +225,32 @@ private fun SettingsTab(model: AppViewModel) {
                 Text(option.title)
             }
         }
+
+        Text("Saved videos", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Clips are saved as MP4 files in Internal storage/A++ (up to 720p) and play offline. " +
+                "Replays download ahead inside the app (a 3-hour game is roughly 2 GB at 720p) and need internet to start, " +
+                "because Altitude+ doesn't allow saved licenses.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        DownloadQuality.entries.forEach { option ->
+            Row(
+                Modifier.fillMaxWidth().clickable { model.setDownloadQuality(option) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = option == quality, onClick = { model.setDownloadQuality(option) })
+                Text(option.title)
+            }
+        }
+        Text("Using ${formatBytes(saved.sumOf { it.bytes })} for ${saved.size} saved video(s).", style = MaterialTheme.typography.bodySmall)
+        if (saved.isNotEmpty()) OutlinedButton(onClick = model::removeAllSaved) { Text("Delete all saved videos (incl. A++ clips)") }
+
+        Text("Offline playback", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Asks Altitude+'s license server whether a stream may be saved for true offline playback. Long-press any video for this and Save.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedButton(onClick = { model.checkOffline(null, "Live channel") }) { Text("Check live channel") }
 
         Text("Location", style = MaterialTheme.typography.titleMedium)
         Text(

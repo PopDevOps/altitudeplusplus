@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
+import android.util.Log
 import android.util.Rational
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -54,6 +55,7 @@ class PlayerActivity : ComponentActivity() {
     private var player: ExoPlayer? = null
     private var status by mutableStateOf<Status>(Status.Loading)
     private val isLive get() = intent.getStringExtra(EXTRA_VIDEO_ID) == null
+    private var playingSaved = false
 
     private sealed interface Status {
         data object Loading : Status
@@ -70,13 +72,20 @@ class PlayerActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
-        val exo = ExoPlayer.Builder(this).build().also { player = it }
+        val graph = (application as AltitudeApp).graph
+        val exo = ExoPlayer.Builder(this)
+            // Saved segments come from disk; everything else streams as usual.
+            .setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(graph.offline.playbackDataSourceFactory))
+            .build()
+            .also { player = it }
         exo.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
+                Log.e(TAG, "Player error ${error.errorCodeName}", error)
                 status = Status.Failed(describe(error))
             }
 
             override fun onPlaybackStateChanged(state: Int) {
+                Log.i(TAG, "State ${stateName(state)}")
                 if (state == Player.STATE_READY) status = Status.Playing
             }
         })
@@ -117,13 +126,51 @@ class PlayerActivity : ComponentActivity() {
         val graph = (application as AltitudeApp).graph
         val videoId = intent.getStringExtra(EXTRA_VIDEO_ID)
         val title = intent.getStringExtra(EXTRA_TITLE)
+        val saved = videoId?.let { graph.offline.find(it) }?.takeIf { it.isComplete }
+        if (saved != null) {
+            playingSaved = true
+            if (!saved.needsInternet) {
+                Log.i(TAG, "Playing saved file for $videoId")
+                playItem(graph.offline.offlineMediaItem(saved, title))
+                return
+            }
+            // Downloaded ahead: video is on the phone, but Altitude+ only issues
+            // streaming licenses, so get a fresh one for this playback.
+            Log.i(TAG, "Playing downloaded copy of $videoId with a fresh streaming license")
+            lifecycleScope.launch {
+                try {
+                    val license = graph.resolvePlayback(videoId).widevine
+                        ?: error("Altitude+ returned no license details")
+                    playItem(graph.offline.offlineMediaItem(saved, title, license))
+                } catch (e: Exception) {
+                    Log.e(TAG, "Couldn't get a streaming license for the download", e)
+                    status = Status.Failed(
+                        "This replay is downloaded, but Altitude+ needs to approve each playback online. " +
+                            "Connect to the internet and try again.\n\n(${e.message})",
+                    )
+                }
+            }
+            return
+        }
+        Log.i(TAG, "Resolving ${videoId ?: "live channel"} ($title)")
         lifecycleScope.launch {
             try {
                 val source = graph.resolvePlayback(videoId)
+                // Never log the license token.
+                Log.i(TAG, "Source ${if (source.isDash) "DASH" else "HLS"}, drm=${source.widevine != null}, url=${source.url.substringBefore('?')}")
                 play(source, title)
             } catch (e: Exception) {
+                Log.e(TAG, "Couldn't resolve stream", e)
                 status = Status.Failed(e.message ?: "Couldn't start playback.")
             }
+        }
+    }
+
+    private fun playItem(item: MediaItem) {
+        player?.apply {
+            setMediaItem(item)
+            prepare()
+            playWhenReady = true
         }
     }
 
@@ -154,7 +201,11 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private fun describe(error: PlaybackException): String = when (error.errorCode) {
+    private fun describe(error: PlaybackException): String = if (playingSaved && error.errorCode in
+        PlaybackException.ERROR_CODE_DRM_UNSPECIFIED..PlaybackException.ERROR_CODE_DRM_LICENSE_EXPIRED
+    ) {
+        "Altitude+ didn't approve playback of this download. Check your internet connection and sign-in, then try again."
+    } else when (error.errorCode) {
         PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED ->
             "Altitude+ refused the playback license. Your sign-in or location may have changed — try again."
         PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED,
@@ -197,7 +248,16 @@ class PlayerActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    private fun stateName(state: Int) = when (state) {
+        Player.STATE_IDLE -> "IDLE"
+        Player.STATE_BUFFERING -> "BUFFERING"
+        Player.STATE_READY -> "READY"
+        Player.STATE_ENDED -> "ENDED"
+        else -> state.toString()
+    }
+
     companion object {
+        private const val TAG = "AltitudePlayer"
         private const val EXTRA_VIDEO_ID = "videoId"
         private const val EXTRA_TITLE = "title"
 

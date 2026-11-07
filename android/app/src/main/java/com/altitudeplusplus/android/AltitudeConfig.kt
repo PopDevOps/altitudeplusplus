@@ -37,5 +37,6 @@ enum class DeviceProfile(
     val pageDevice: String,
 ) {
     FIRE_TV("Fire TV", "fire_tv", "fireTv", "FIRETV"),
+    ANDROID_PHONE("Android phone", "android_phone", "android", "ANDROID"),
     WEB("Web browser", "web_browser", "web", "WEB"),
 }

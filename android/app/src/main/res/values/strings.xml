@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Altitude++</string>
+    <string name="download_channel_name">Saved videos</string>
+    <string name="download_channel_description">Progress of videos being saved for offline viewing</string>
 </resources>
