@@ -7,6 +7,7 @@ Unofficial apps for [Altitude+](https://www.altitudeplus.com), the streaming ser
 | Platform | Folder | Status |
 |---|---|---|
 | Apple TV | [`appletv/`](appletv/) | Works: live 24/7 channel, guide, Avalanche and Nuggets on-demand. [Install guide](appletv/README.md). |
+| Android phone | [`android/`](android/) | Scaffold: builds and launches; playback not yet tested. [README](android/README.md). |
 | Android TV | — | Not started. [`docs/API.md`](docs/API.md) has what a port needs. |
 
 > **Unofficial.** Altitude++ isn't affiliated with or endorsed by Altitude Sports & Entertainment, Kroenke Sports & Entertainment, or ViewLift. You need your own Altitude+ subscription and must be inside Altitude's broadcast territory. **No encryption is bypassed:** streams play through each platform's own DRM, the same way the official apps play them, and Altitude++ doesn't record, download, or share anything. It may stop working if Altitude+ changes its service. See [License and trademarks](#license-and-trademarks).
@@ -14,6 +15,7 @@ Unofficial apps for [Altitude+](https://www.altitudeplus.com), the streaming ser
 ## Repository layout
 
 - **`appletv/`:** the tvOS app, its installer, and Apple-specific docs.
+- **`android/`:** the Android phone app (Kotlin, Compose, Media3).
 - **`docs/API.md`:** how Altitude+ works (sign-in, location, live and on-demand streams, DRM, guide), for any platform.
 - **`tools/probe.py`:** checks the Altitude+ API from any computer with Python 3, including as Apple TV or Fire TV.
 

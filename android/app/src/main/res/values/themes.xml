@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.AltitudePlusPlus" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.AltitudePlusPlus.Player" parent="Theme.AltitudePlusPlus">
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>
